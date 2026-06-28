@@ -345,10 +345,14 @@ pub fn db_media_to_item(media: db::Media, hide_sources: bool) -> BaseItemDto {
         ),
         media_type: match media.kind {
             db::MediaKind::Movie
+            | db::MediaKind::Series
+            | db::MediaKind::Season
             | db::MediaKind::Episode
             | db::MediaKind::TvChannel
             | db::MediaKind::TvProgram
-            | db::MediaKind::Intro => MediaType::Video,
+            | db::MediaKind::Intro
+            | db::MediaKind::Stream
+            | db::MediaKind::StreamGroup => MediaType::Video,
             db::MediaKind::Track => MediaType::Audio,
             db::MediaKind::Playlist => match media.collection_media_kind {
                 Some(db::CollectionMediaKind::Music) => MediaType::Audio,

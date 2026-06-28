@@ -3665,6 +3665,9 @@ pub struct AuthenticationInfo {
 
 #[dto]
 pub struct SearchHint {
+    /// Primary item identifier — Jellyfin clients (including Roku) read `Id`.
+    pub id: Uuid,
+    /// Deprecated alias kept for older clients.
     pub item_id: Uuid,
     pub name: Option<String>,
     pub matched_term: Option<String>,
