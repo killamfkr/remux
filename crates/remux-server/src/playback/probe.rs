@@ -1260,6 +1260,7 @@ pub(crate) async fn probe_stream(
     restrict_resolution: bool,
     port: u16,
     db: &sqlx::SqlitePool,
+    live_tv: bool,
 ) -> axum_anyhow::ApiResult<(api::MediaSourceInfo, db::Media)> {
     if skip_probe {
         let mut info = api::MediaSourceInfo::from(stream.clone());
@@ -1294,8 +1295,15 @@ pub(crate) async fn probe_stream(
                 }
                 None => true,
             };
-            if alive {
-                debug!(id = %stream.id, "probe cache hit, url alive");
+            if alive || live_tv {
+                if !alive {
+                    debug!(
+                        id = %stream.id,
+                        "live TV: using cached probe despite failed reachability check"
+                    );
+                } else {
+                    debug!(id = %stream.id, "probe cache hit, url alive");
+                }
                 let mut info = api::MediaSourceInfo::from(stream.clone());
                 apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
                 return Ok((info, stream.clone()));
@@ -1336,6 +1344,17 @@ pub(crate) async fn probe_stream(
             let mut info = api::MediaSourceInfo::from(stream.clone());
             apply_video_bitrate_fallback(&mut info.media_streams, info.bitrate);
             Ok((info, stream.clone()))
+        }
+        Err(error) if live_tv => {
+            warn!(
+                id = %stream.id,
+                error = ?error,
+                "live TV probe failed, using synthetic stream metadata for playback"
+            );
+            Ok((
+                crate::conversions::live_playback_fallback(stream.clone()),
+                stream.clone(),
+            ))
         }
         Err(error) => Err(error),
     }

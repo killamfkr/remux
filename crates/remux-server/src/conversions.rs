@@ -19,7 +19,9 @@ use tracing::warn;
 // Heuristic metadata fallback for remote source URLs when ffprobe metadata is
 // unavailable. This keeps clients functional (stream selection/transcode
 // decisions) instead of exposing empty stream lists.
-fn infer_container_from_url(url: &str) -> Option<remux_sdks::remux::VideoContainer> {
+pub(crate) fn infer_container_from_url(
+    url: &str,
+) -> Option<remux_sdks::remux::VideoContainer> {
     let path = url::Url::parse(url)
         .ok()
         .map(|u| {
@@ -309,6 +311,70 @@ pub(crate) fn filename_guess_persist_payload(
 /// is checked everywhere a real ffprobe/RemuxDB result would otherwise be
 /// trusted (see `probe_stream` in playback::probe), so a guess here can never
 /// block or stand in for a real probe.
+/// Minimal `MediaSourceInfo` for live TV when ffprobe cannot reach the provider
+/// URL in time (common for IPTV). Gives the transcode/HLS pipeline enough
+/// codec/container hints to start ffmpeg against the raw URL.
+pub(crate) fn live_playback_fallback(source: db::Media) -> api::MediaSourceInfo {
+    let mut info = api::MediaSourceInfo::from(source.clone());
+    apply_filename_guess(&mut info, &source);
+
+    if info
+        .video_stream()
+        .is_none()
+    {
+        let index = info
+            .media_streams
+            .iter()
+            .map(|s| s.index)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        info.media_streams
+            .push(api::MediaStream {
+                type_: Some(api::MediaStreamType::Video),
+                codec: Some("h264".to_string()),
+                index,
+                is_default: Some(true),
+                ..Default::default()
+            });
+    }
+    if info
+        .audio_stream()
+        .is_none()
+    {
+        let index = info
+            .media_streams
+            .iter()
+            .map(|s| s.index)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        info.media_streams
+            .push(api::MediaStream {
+                type_: Some(api::MediaStreamType::Audio),
+                codec: Some("aac".to_string()),
+                index,
+                is_default: Some(true),
+                channels: Some(2),
+                ..Default::default()
+            });
+    }
+    if info
+        .container
+        .is_none()
+    {
+        info.container = source
+            .stream_info
+            .as_ref()
+            .and_then(|si| {
+                si.descriptor
+                    .as_http_url()
+            })
+            .and_then(infer_container_from_url);
+    }
+    info
+}
+
 pub(crate) async fn apply_filename_probe_fallback(
     base_item: &mut api::BaseItemDto,
     sources: &[db::Media],
@@ -1245,5 +1311,37 @@ mod tests {
             2
         );
         assert_eq!(output["TrackEvents"][1]["Text"], "World");
+    }
+
+    #[test]
+    fn live_playback_fallback_adds_stub_streams_for_unreachable_iptv() {
+        let channel = db::Media {
+            title: "News".to_string(),
+            kind: db::MediaKind::TvChannel,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "http://provider.example/live/feed.m3u8",
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let info = live_playback_fallback(channel);
+        assert!(
+            info.video_stream()
+                .is_some(),
+            "fallback must include a video stream"
+        );
+        assert!(
+            info.audio_stream()
+                .is_some(),
+            "fallback must include an audio stream"
+        );
+        assert_eq!(
+            info.container
+                .as_ref()
+                .map(|c| c.to_string()),
+            Some("hls".to_string())
+        );
     }
 }

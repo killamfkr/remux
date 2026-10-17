@@ -23,6 +23,9 @@ pub struct XtreamStream {
     pub epg_channel_id: Option<String>,
     pub category_id: Option<serde_json::Value>, // int or string depending on provider
     pub category_name: Option<String>,
+    /// Provider-supplied playback URL when present; otherwise we build the
+    /// standard Xtream live path (`/live/{user}/{pass}/{id}.ts`).
+    pub direct_source: Option<String>,
 }
 
 /// A category entry from the Xtream Codes `get_live_categories` endpoint.
@@ -169,7 +172,14 @@ fn stream_to_channel(
         .name
         .filter(|n| !n.is_empty())?;
     let stream_id = stream_id_to_string(&s.stream_id?)?;
-    let stream_url = format!("{}/{}/{}/{}", base, username, password, stream_id);
+    let stream_url = s
+        .direct_source
+        .as_deref()
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            xtream_live_stream_url(base, username, password, &stream_id)
+        });
 
     let program_kind = s
         .category_id
@@ -384,8 +394,7 @@ fn vod_to_media(
         .container_extension
         .as_deref()
         .unwrap_or("mp4");
-    let stream_url =
-        format!("{}/{}/{}/{}.{}", base, username, password, stream_id, ext);
+    let stream_url = xtream_vod_stream_url(base, username, password, &stream_id, ext);
 
     let released_at = v
         .releasedate
@@ -643,6 +652,43 @@ fn parse_year_or_date(s: &str) -> Option<NaiveDateTime> {
         .ok()
 }
 
+fn xtream_base_url(base: &str) -> &str {
+    base.trim_end_matches('/')
+}
+
+/// Standard Xtream Codes live playback URL (same shape Jellyfin and players use).
+pub(crate) fn xtream_live_stream_url(
+    base: &str,
+    username: &str,
+    password: &str,
+    stream_id: &str,
+) -> String {
+    format!(
+        "{}/live/{}/{}/{}.ts",
+        xtream_base_url(base),
+        username,
+        password,
+        stream_id
+    )
+}
+
+pub(crate) fn xtream_vod_stream_url(
+    base: &str,
+    username: &str,
+    password: &str,
+    stream_id: &str,
+    extension: &str,
+) -> String {
+    format!(
+        "{}/movie/{}/{}/{}.{}",
+        xtream_base_url(base),
+        username,
+        password,
+        stream_id,
+        extension
+    )
+}
+
 fn parse_rating(v: &serde_json::Value) -> Option<f64> {
     match v {
         serde_json::Value::Number(n) => n.as_f64(),
@@ -653,5 +699,74 @@ fn parse_rating(v: &serde_json::Value) -> Option<f64> {
             .parse()
             .ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xtream_live_url_uses_live_path_and_ts_extension() {
+        let url = xtream_live_stream_url(
+            "https://example.com:8080/",
+            "user",
+            "pass",
+            "2121632046",
+        );
+        assert_eq!(url, "https://example.com:8080/live/user/pass/2121632046.ts");
+    }
+
+    #[test]
+    fn xtream_vod_url_uses_movie_path() {
+        let url = xtream_vod_stream_url("http://host", "u", "p", "99", "mkv");
+        assert_eq!(url, "http://host/movie/u/p/99.mkv");
+    }
+
+    #[test]
+    fn stream_to_channel_builds_standard_live_url() {
+        let ch = stream_to_channel(
+            XtreamStream {
+                num: None,
+                name: Some("News".into()),
+                stream_id: Some(serde_json::json!(2121632046)),
+                stream_icon: None,
+                epg_channel_id: None,
+                category_id: None,
+                category_name: None,
+                direct_source: None,
+            },
+            "https://live.flixnest.app",
+            "cq4mozfd7gkf",
+            "secret",
+            &HashMap::new(),
+        )
+        .expect("channel");
+        assert_eq!(
+            ch.url,
+            "https://live.flixnest.app/live/cq4mozfd7gkf/secret/2121632046.ts"
+        );
+    }
+
+    #[test]
+    fn stream_to_channel_prefers_direct_source() {
+        let ch = stream_to_channel(
+            XtreamStream {
+                num: None,
+                name: Some("News".into()),
+                stream_id: Some(serde_json::json!(1)),
+                stream_icon: None,
+                epg_channel_id: None,
+                category_id: None,
+                category_name: None,
+                direct_source: Some("http://cdn.example/stream.m3u8".into()),
+            },
+            "http://server",
+            "user",
+            "pass",
+            &HashMap::new(),
+        )
+        .expect("channel");
+        assert_eq!(ch.url, "http://cdn.example/stream.m3u8");
     }
 }
