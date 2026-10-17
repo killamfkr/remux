@@ -286,7 +286,7 @@ fn channel_to_media(
                 .clone(),
             ..Default::default()
         },
-        enabled: false,
+        enabled: true,
         program_kind: ch
             .program_kind
             .clone(),

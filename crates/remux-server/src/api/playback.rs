@@ -972,6 +972,8 @@ async fn items_playbackinfo_inner(
             source.read_at_native_framerate = true;
             source.buffer_ms = Some(1500);
             source.run_time_ticks = None;
+            source.supports_direct_play = false;
+            source.supports_direct_stream = false;
             // Route through our proxy so clients don't hit the raw IPTV URL directly
             // (which may redirect and confuse players that don't follow 302 on streams).
             source.is_remote = false;
@@ -3258,6 +3260,62 @@ mod tests {
             "subtitle delivery URL should carry the session token: {delivery}"
         );
         assert_api_keys_are_real(&body, &token);
+    }
+
+    /// IPTV URLs often block ffprobe or time out; playback must still answer.
+    #[tokio::test]
+    async fn test_playbackinfo_live_survives_unreachable_stream_url() {
+        let (server, guard, token) = authenticated_server().await;
+        let auth = auth_header_with_token(&token);
+        let mut media = crate::db::Media {
+            title: "Unreachable IPTV".to_string(),
+            kind: crate::db::MediaKind::TvChannel,
+            stream_info: Some(crate::stream::StreamInfo {
+                descriptor: crate::stream::StreamDescriptor::http(
+                    "http://127.0.0.1:1/unreachable.ts",
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        media
+            .save(
+                &guard
+                    .0
+                    .db,
+            )
+            .await
+            .expect("save channel");
+
+        let resp = server
+            .post(&format!("/items/{}/playbackinfo", media.id))
+            .add_header(
+                http::header::AUTHORIZATION,
+                HeaderValue::from_str(&auth).unwrap(),
+            )
+            .json(&json!({ "MaxStreamingBitrate": 1_000_000 }))
+            .await;
+
+        resp.assert_status_ok();
+        let body: serde_json::Value = resp.json();
+        let source = &body["MediaSources"][0];
+        assert_eq!(source["SupportsDirectPlay"], false);
+        assert_eq!(source["SupportsDirectStream"], false);
+        assert!(
+            source["TranscodingUrl"]
+                .as_str()
+                .is_some(),
+            "live TV should expose a server playback URL: {source}"
+        );
+        let streams = source["MediaStreams"]
+            .as_array()
+            .expect("media streams");
+        assert!(
+            streams
+                .iter()
+                .any(|s| s["Type"] == "Video"),
+            "expected synthetic video stream metadata: {streams:?}"
+        );
     }
 
     /// Live TV takes its own branch and builds its own URL.

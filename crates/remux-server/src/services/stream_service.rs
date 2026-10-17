@@ -697,6 +697,9 @@ impl StreamService {
             .await
             .ok();
         }
+        let live_tv = item
+            .as_ref()
+            .is_some_and(|it| it.is_live());
 
         // Addon subtitles are fetched for every candidate that is probed or
         // already has real probe data: those are the sources that list
@@ -797,6 +800,7 @@ impl StreamService {
                 &self
                     .ctx
                     .db,
+                live_tv,
             )
             .await;
             let mut external_subtitles = match subtitle_fetches.remove(&stream.id) {
